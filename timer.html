@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>10分 発表タイマー</title>
+  <style>
+    :root {
+      --bg: #111;
+      --fg: #fff;
+      --warn-bg: #d40000;
+      --warn-fg: #fff;
+      --warn-yellow-bg: #ffd700;
+      --warn-yellow-fg: #111;
+      --warn-blue-bg: #007bff;
+      --warn-blue-fg: #fff;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      touch-action: manipulation;
+      user-select: none;
+    }
+
+    .wrap {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      align-items: center;
+      justify-items: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    .panel {
+      width: min(1200px, 98vw);
+      text-align: center;
+    }
+
+    #time {
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      /* 文字が大きくなるので少し間隔を詰める */
+      font-size: clamp(140px, 40vw, 500px);
+      line-height: 1.0;
+      margin: 0;
+    }
+
+    #msg {
+      margin-top: 20px;
+      font-weight: 700;
+      font-size: clamp(40px, 12vw, 120px);
+      opacity: 0.95;
+      min-height: 1.4em;
+      /* メッセージがない時もガタつかない */
+    }
+
+    .controls {
+      width: min(920px, 96vw);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 16px 10px;
+      font-size: 18px;
+      font-weight: 700;
+      background: #2b2b2b;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    button:active {
+      transform: translateY(1px);
+      filter: brightness(1.08);
+    }
+
+    .hint {
+      margin-top: 10px;
+      font-size: 14px;
+      opacity: 0.7;
+    }
+
+    /* 爆発パーティクル */
+    .particle {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* 残り2分〜1分：青背景・白文字 */
+    body.info {
+      background: var(--warn-blue-bg);
+      color: var(--warn-blue-fg);
+    }
+
+    /* 残り60秒〜30秒：黄背景・黒文字 */
+    body.warning {
+      background: var(--warn-yellow-bg);
+      color: var(--warn-yellow-fg);
+    }
+
+    /* 残り30秒：赤背景・白文字 */
+    body.danger {
+      background: var(--warn-bg);
+      color: var(--warn-fg);
+    }
+
+    /* 残り10秒：赤背景点滅 */
+    body.blink {
+      animation: blinkBg 0.6s steps(2, jump-none) infinite;
+    }
+
+    @keyframes blinkBg {
+      0% {
+        background: var(--warn-bg);
+      }
+
+      50% {
+        background: #111;
+      }
+
+      100% {
+        background: var(--warn-bg);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <p id="time">10:00</p>
+      <div id="msg"></div>
+      <div class="hint">（画面タップでも Start / Pause 切替）</div>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn">START</button>
+      <button id="pauseBtn">PAUSE</button>
+      <button id="resetBtn">RESET</button>
+    </div>
+  </div>
+
+  <script>
+    // ===== 設定 =====
+    const TOTAL_SECONDS = 10 * 60; // 10分
+
+    // ===== 状態 =====
+    let remaining = TOTAL_SECONDS;
+    let timerId = null;
+    let running = false;
+
+    const timeEl = document.getElementById('time');
+    const msgEl = document.getElementById('msg');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    function render() {
+      // ルール：
+      // ・基本：分:秒
+      // ・残り50秒で「秒だけ表示」
+      // ・残り30秒で赤背景・白文字
+      // ・残り10秒で赤背景点滅
+      // ・残り8分で「まとめて」
+      // ・残り1分で「ラストスパート」
+
+      // 背景状態
+      document.body.classList.toggle('info', remaining <= 120 && remaining > 60);
+      document.body.classList.toggle('warning', remaining <= 60 && remaining > 30);
+      document.body.classList.toggle('danger', remaining <= 30 && remaining > 10);
+      document.body.classList.toggle('blink', remaining <= 10 && remaining > 0);
+
+      // 表示時間
+      if (remaining <= 50) {
+        // 秒だけ表示（例: 50 / 49 / ...）
+        timeEl.textContent = String(remaining);
+      } else {
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        timeEl.textContent = `${m}:${pad2(s)}`;
+      }
+
+      // メッセージ
+      let msg = '';
+      if (remaining === 0) {
+        msg = 'おつかれさまでした';
+        triggerExplosion();
+      } else if (remaining <= 10) {
+        msg = 'まもなく終了';
+      } else if (remaining <= 60) {
+        msg = 'ラストスパート';
+      } else if (remaining <= 120) {
+        msg = 'そろそろまとめて';
+      }
+
+      msgEl.textContent = msg;
+    }
+
+    function tick() {
+      if (!running) return;
+
+      remaining -= 1;
+      if (remaining <= 0) {
+        remaining = 0;
+        stop();
+      }
+      render();
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      timerId = setInterval(tick, 1000);
+      render();
+    }
+
+    function stop() {
+      running = false;
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      render();
+    }
+
+    // 爆発演出
+    let exploded = false;
+    function triggerExplosion() {
+      if (exploded) return;
+      exploded = true;
+
+      const count = 100;
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+
+      for (let i = 0; i < count; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+
+        // 色をランダムに選ぶ（金、赤、白、青）
+        const colors = ['#ffd700', '#ff4500', '#ffffff', '#007bff'];
+        p.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+
+        document.body.appendChild(p);
+
+        const angle = Math.random() * Math.PI * 2;
+        const velocity = 5 + Math.random() * 15;
+        const vx = Math.cos(angle) * velocity;
+        const vy = Math.sin(angle) * velocity;
+
+        let x = centerX;
+        let y = centerY;
+        let opacity = 1;
+
+        const animate = () => {
+          x += vx;
+          y += vy;
+          opacity -= 0.015;
+
+          p.style.left = x + 'px';
+          p.style.top = y + 'px';
+          p.style.opacity = opacity;
+
+          if (opacity > 0) {
+            requestAnimationFrame(animate);
+          } else {
+            p.remove();
+          }
+        };
+
+        requestAnimationFrame(animate);
+      }
+    }
+
+    function reset() {
+      stop();
+      remaining = TOTAL_SECONDS;
+      exploded = false;
+      document.body.classList.remove('info', 'warning', 'danger', 'blink');
+      render();
+    }
+
+    function toggleStartPause() {
+      if (running) stop();
+      else start();
+    }
+
+    // ボタン
+    startBtn.addEventListener('click', start);
+    pauseBtn.addEventListener('click', stop);
+    resetBtn.addEventListener('click', reset);
+
+    // 画面タップで Start/Pause
+    document.body.addEventListener('click', (e) => {
+      // ボタン押下は二重トグルになるので除外
+      if (e.target.tagName === 'BUTTON') return;
+      toggleStartPause();
+    });
+
+    // 初期描画
+    render();
+  </script>
+</body>
+
+</html>
