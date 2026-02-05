@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>10分 発表タイマー</title>
+  <title>100人カイギ：10分 発表タイマー</title>
   <style>
     :root {
       --bg: #111;
@@ -158,6 +158,12 @@
   <script>
     // ===== 設定 =====
     const TOTAL_SECONDS = 10 * 60; // 10分
+    const TIME_MESSAGES = [
+      { time: 0, msg: 'おつかれさまでした' },
+      { time: 10, msg: 'まもなく終了' },
+      { time: 60, msg: 'ラストスパート' },
+      { time: 120, msg: 'そろそろまとめて' },
+    ];
 
     // ===== 状態 =====
     let remaining = TOTAL_SECONDS;
@@ -199,15 +205,13 @@
 
       // メッセージ
       let msg = '';
+      const match = TIME_MESSAGES.find(m => remaining <= m.time);
+      if (match) {
+        msg = match.msg;
+      }
+
       if (remaining === 0) {
-        msg = 'おつかれさまでした';
         triggerExplosion();
-      } else if (remaining <= 10) {
-        msg = 'まもなく終了';
-      } else if (remaining <= 60) {
-        msg = 'ラストスパート';
-      } else if (remaining <= 120) {
-        msg = 'そろそろまとめて';
       }
 
       msgEl.textContent = msg;
