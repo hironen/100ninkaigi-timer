@@ -1,0 +1,8 @@
+{
+  "name": "100ninkaigi",
+  "version": "0.1.0",
+  "description": "100人会議プロジェクト",
+  "skills": [
+    "./skills/"
+  ]
+}

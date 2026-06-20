@@ -1,0 +1,6 @@
+.harness-mem/
+.claude/
+out/
+node_modules/
+*.local
+.DS_Store

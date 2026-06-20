@@ -5,6 +5,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>100人カイギ：10分 発表タイマー</title>
+
+  <!-- PWA: ホーム画面に追加して全画面・オフラインで使う -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <meta name="theme-color" content="#111111" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="10分タイマー" />
   <style>
     :root {
       --bg: #111;
@@ -26,6 +36,8 @@
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
       touch-action: manipulation;
       user-select: none;
+      /* はみ出した中身でページがスクロールしないようにする */
+      overflow: hidden;
     }
 
     .wrap {
@@ -36,26 +48,37 @@
       justify-items: center;
       padding: 16px;
       box-sizing: border-box;
+      /* グリッド行が中身で膨らんでボタンが画面外へ押し出されるのを防ぐ */
+      min-height: 0;
+      overflow: hidden;
     }
 
     .panel {
       width: min(1200px, 98vw);
       text-align: center;
+      /* 子要素が縮小できるようにする（タブレットで収まりきらない対策） */
+      min-width: 0;
+      min-height: 0;
     }
 
     #time {
       font-weight: 800;
       letter-spacing: 0.02em;
       /* 文字が大きくなるので少し間隔を詰める */
-      font-size: clamp(140px, 40vw, 500px);
+      /* 幅(33vw)と高さ(56vh)の両方で頭打ちにして、画面幅の狭いタブレットでも
+         "10:00"(5文字)がはみ出さないようにする。PC(高さ1080+)は上限500pxのまま。 */
+      font-size: min(33vw, 56vh, 500px);
       line-height: 1.0;
       margin: 0;
+      /* 数字を折り返さず1行で拡縮させる */
+      white-space: nowrap;
     }
 
     #msg {
       margin-top: 20px;
       font-weight: 700;
-      font-size: clamp(40px, 12vw, 120px);
+      /* メッセージも高さ基準の上限を併用してタブレットで縦に収める */
+      font-size: min(12vw, 14vh, 120px);
       opacity: 0.95;
       min-height: 1.4em;
       /* メッセージがない時もガタつかない */
@@ -156,8 +179,13 @@
   </div>
 
   <script>
-    // ===== 設定 =====
-    const TOTAL_SECONDS = 10 * 60; // 10分
+    'use strict';
+
+    // ============================================================
+    // 設定
+    // ============================================================
+    const TOTAL_SECONDS = 10 * 60;            // 10分（変更する場合はここだけ）
+    const DURATION_MS = TOTAL_SECONDS * 1000;
     const TIME_MESSAGES = [
       { time: 0, msg: 'おつかれさまでした' },
       { time: 10, msg: 'まもなく終了' },
@@ -165,159 +193,347 @@
       { time: 120, msg: 'そろそろまとめて' },
     ];
 
-    // ===== 状態 =====
-    let remaining = TOTAL_SECONDS;
-    let timerId = null;
-    let running = false;
+    // ============================================================
+    // ドメイン中核（純粋・DOM/音/タイマーを知らない＝テスト可能）
+    // ============================================================
 
-    const timeEl = document.getElementById('time');
-    const msgEl = document.getElementById('msg');
-    const startBtn = document.getElementById('startBtn');
-    const pauseBtn = document.getElementById('pauseBtn');
-    const resetBtn = document.getElementById('resetBtn');
-
-    function pad2(n) { return String(n).padStart(2, '0'); }
-
-    function render() {
-      // ルール：
-      // ・基本：分:秒
-      // ・残り50秒で「秒だけ表示」
-      // ・残り30秒で赤背景・白文字
-      // ・残り10秒で赤背景点滅
-      // ・残り8分で「まとめて」
-      // ・残り1分で「ラストスパート」
-
-      // 背景状態
-      document.body.classList.toggle('info', remaining <= 120 && remaining > 60);
-      document.body.classList.toggle('warning', remaining <= 60 && remaining > 30);
-      document.body.classList.toggle('danger', remaining <= 30 && remaining > 10);
-      document.body.classList.toggle('blink', remaining <= 10 && remaining > 0);
-
-      // 表示時間
-      if (remaining <= 50) {
-        // 秒だけ表示（例: 50 / 49 / ...）
-        timeEl.textContent = String(remaining);
-      } else {
-        const m = Math.floor(remaining / 60);
-        const s = remaining % 60;
-        timeEl.textContent = `${m}:${pad2(s)}`;
-      }
-
-      // メッセージ
-      let msg = '';
-      const match = TIME_MESSAGES.find(m => remaining <= m.time);
-      if (match) {
-        msg = match.msg;
-      }
-
-      if (remaining === 0) {
-        triggerExplosion();
-      }
-
-      msgEl.textContent = msg;
+    // 残り秒 → 表示文字列（50秒以下は秒のみ）
+    function formatTime(sec) {
+      if (sec <= 50) return String(sec);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m + ':' + String(s).padStart(2, '0');
     }
 
-    function tick() {
-      if (!running) return;
-
-      remaining -= 1;
-      if (remaining <= 0) {
-        remaining = 0;
-        stop();
-      }
-      render();
+    // 残り秒 → 背景クラス（''/info/warning/danger/blink、排他）
+    function colorClass(sec) {
+      if (sec <= 10 && sec > 0) return 'blink';
+      if (sec <= 30 && sec > 10) return 'danger';
+      if (sec <= 60 && sec > 30) return 'warning';
+      if (sec <= 120 && sec > 60) return 'info';
+      return '';
     }
 
-    function start() {
-      if (running) return;
-      running = true;
-      timerId = setInterval(tick, 1000);
-      render();
+    // 残り秒 → メッセージ（無しは ''）
+    function messageFor(sec) {
+      const hit = TIME_MESSAGES.find((m) => sec <= m.time);
+      return hit ? hit.msg : '';
     }
 
-    function stop() {
-      running = false;
-      if (timerId) clearInterval(timerId);
-      timerId = null;
-      render();
-    }
-
-    // 爆発演出
-    let exploded = false;
-    function triggerExplosion() {
-      if (exploded) return;
-      exploded = true;
-
-      const count = 100;
-      const centerX = window.innerWidth / 2;
-      const centerY = window.innerHeight / 2;
-
-      for (let i = 0; i < count; i++) {
-        const p = document.createElement('div');
-        p.className = 'particle';
-
-        // 色をランダムに選ぶ（金、赤、白、青）
-        const colors = ['#ffd700', '#ff4500', '#ffffff', '#007bff'];
-        p.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
-
-        document.body.appendChild(p);
-
-        const angle = Math.random() * Math.PI * 2;
-        const velocity = 5 + Math.random() * 15;
-        const vx = Math.cos(angle) * velocity;
-        const vy = Math.sin(angle) * velocity;
-
-        let x = centerX;
-        let y = centerY;
-        let opacity = 1;
-
-        const animate = () => {
-          x += vx;
-          y += vy;
-          opacity -= 0.015;
-
-          p.style.left = x + 'px';
-          p.style.top = y + 'px';
-          p.style.opacity = opacity;
-
-          if (opacity > 0) {
-            requestAnimationFrame(animate);
-          } else {
-            p.remove();
+    // タイマー状態機械。時刻 now[ms] を注入する純粋オブジェクト。
+    // 計時は performance.now() アンカー方式（setInterval の発火回数に依存しない）。
+    function createTimerCore(durationMs) {
+      let running = false;
+      let remainingMs = durationMs;
+      let endAt = 0;
+      return {
+        isRunning: () => running,
+        isFinished: () => remainingMs <= 0,
+        remainingMs: () => remainingMs,
+        remainingSec: () => Math.max(0, Math.ceil(remainingMs / 1000)),
+        start(now) {
+          if (running || remainingMs <= 0) return false; // 実行中/終了後は開始しない
+          running = true;
+          endAt = now + remainingMs;
+          return true;
+        },
+        sync(now) {
+          if (running) {
+            remainingMs = Math.max(0, endAt - now);
+            if (remainingMs <= 0) { remainingMs = 0; running = false; }
           }
-        };
+          return remainingMs;
+        },
+        pause(now) {
+          if (running) {
+            remainingMs = Math.max(0, endAt - now); // 一時停止時点の残りを精密保持
+            running = false;
+          }
+        },
+        reset() {
+          running = false;
+          remainingMs = durationMs;
+          endAt = 0;
+        },
+      };
+    }
 
-        requestAnimationFrame(animate);
+    // 残り秒に応じて警告音を鳴らす判定（多重防止フラグ込み）。出力先は sound ポート。
+    function createSignaller(sound) {
+      let beeped60 = false, beeped0 = false, lastCountdownSec = null;
+      return {
+        update(sec) {
+          // 残り1分：注意のピピッ
+          if (sec <= 60 && sec > 5 && !beeped60) { beeped60 = true; sound.beep(2, 880, 0.15); }
+          // 最後の5秒：1秒ごとに「プ」（5→4→3→2→1）
+          if (sec <= 5 && sec >= 1 && sec !== lastCountdownSec) { lastCountdownSec = sec; sound.beep(1, 880, 0.10); }
+          // 0:00：締めの「ポーン」
+          if (sec === 0 && !beeped0) { beeped0 = true; sound.chime(1320, 0.8); }
+        },
+        reset() { beeped60 = false; beeped0 = false; lastCountdownSec = null; },
+      };
+    }
+
+    // ============================================================
+    // インフラ・アダプタ（外界とのやり取り）
+    // ============================================================
+
+    // 音（WebAudio）。AudioContext はユーザー操作内で unlock すること（autoplay 対策）。
+    const Sound = (() => {
+      let ctx = null;
+      function unlock() {
+        try {
+          if (!ctx) {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return; // 非対応環境は視覚のみで動作
+            ctx = new AC();
+          }
+          if (ctx.state === 'suspended') ctx.resume();
+        } catch (e) { /* 音不可環境でも継続 */ }
       }
+      function beep(times, freq, duration) {
+        if (!ctx || ctx.state !== 'running') return;
+        const base = ctx.currentTime, gap = duration + 0.1;
+        for (let i = 0; i < times; i++) {
+          const osc = ctx.createOscillator(), gain = ctx.createGain();
+          osc.type = 'square';
+          osc.frequency.value = freq;
+          const t0 = base + i * gap, t1 = t0 + duration;
+          gain.gain.setValueAtTime(0.0001, t0);
+          gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(t0);
+          osc.stop(t1 + 0.02);
+        }
+      }
+      function chime(freq, duration) {
+        if (!ctx || ctx.state !== 'running') return;
+        const t0 = ctx.currentTime;
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.05);
+      }
+      return { unlock, beep, chime };
+    })();
+
+    // 画面スリープ防止（Screen Wake Lock、対応端末のみ）。
+    const Screen = (() => {
+      let lock = null;
+      async function acquire() {
+        try {
+          if ('wakeLock' in navigator && !lock) {
+            lock = await navigator.wakeLock.request('screen');
+            lock.addEventListener('release', () => { lock = null; });
+          }
+        } catch (e) { lock = null; }
+      }
+      function release() {
+        try { if (lock) lock.release(); } catch (e) { /* noop */ }
+        lock = null;
+      }
+      return { acquire, release };
+    })();
+
+    // 画面描画（DOM）。残り秒だけを受け取り、表示・配色・終了演出を担う。
+    const Renderer = (() => {
+      const timeEl = document.getElementById('time');
+      const msgEl = document.getElementById('msg');
+      const CLASSES = ['info', 'warning', 'danger', 'blink'];
+      let exploded = false;
+
+      function paint(sec) {
+        const cls = colorClass(sec);
+        CLASSES.forEach((c) => document.body.classList.toggle(c, c === cls));
+        timeEl.textContent = formatTime(sec);
+        msgEl.textContent = messageFor(sec);
+      }
+
+      function explode() {
+        if (exploded) return;
+        exploded = true;
+        const count = 100;
+        const centerX = window.innerWidth / 2;
+        const centerY = window.innerHeight / 2;
+        for (let i = 0; i < count; i++) {
+          const p = document.createElement('div');
+          p.className = 'particle';
+          const colors = ['#ffd700', '#ff4500', '#ffffff', '#007bff'];
+          p.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+          document.body.appendChild(p);
+          const angle = Math.random() * Math.PI * 2;
+          const velocity = 5 + Math.random() * 15;
+          const vx = Math.cos(angle) * velocity;
+          const vy = Math.sin(angle) * velocity;
+          let x = centerX, y = centerY, opacity = 1;
+          const animate = () => {
+            x += vx; y += vy; opacity -= 0.015;
+            p.style.left = x + 'px';
+            p.style.top = y + 'px';
+            p.style.opacity = opacity;
+            if (opacity > 0) requestAnimationFrame(animate);
+            else p.remove();
+          };
+          requestAnimationFrame(animate);
+        }
+      }
+
+      function clearEffects() {
+        exploded = false;
+        CLASSES.forEach((c) => document.body.classList.remove(c));
+      }
+
+      return { paint, explode, clearEffects };
+    })();
+
+    // ============================================================
+    // アプリ（中核とアダプタを配線し、tick ループを回す）
+    // ============================================================
+    const App = (() => {
+      const core = createTimerCore(DURATION_MS);
+      const signaller = createSignaller(Sound);
+      const now = () => performance.now();
+      let timerId = null;
+
+      // 1フレーム分の反映（表示・音・終了演出）
+      function refresh() {
+        const sec = core.remainingSec();
+        Renderer.paint(sec);
+        signaller.update(sec);
+        if (sec === 0) Renderer.explode();
+      }
+
+      function stopLoop() {
+        if (timerId) clearInterval(timerId);
+        timerId = null;
+        Screen.release();
+      }
+
+      function tick() {
+        if (!core.isRunning()) return;
+        core.sync(now());
+        if (core.isFinished()) { stopLoop(); refresh(); return; } // 0:00 で停止
+        refresh();
+      }
+
+      function start() {
+        if (!core.start(now())) return;  // 実行中/終了後は無視
+        Sound.unlock();   // ユーザー操作内で AudioContext を解錠
+        Screen.acquire(); // 計測中は画面を消さない
+        timerId = setInterval(tick, 200); // 表示更新（精度は core 側が担保）
+        refresh();
+      }
+
+      function pause() {
+        core.pause(now());
+        stopLoop();
+        refresh();
+      }
+
+      function reset() {
+        core.reset();
+        stopLoop();
+        signaller.reset();
+        Renderer.clearEffects();
+        refresh();
+      }
+
+      function toggle() {
+        if (core.isRunning()) pause();
+        else start();
+      }
+
+      // 配線
+      document.getElementById('startBtn').addEventListener('click', start);
+      document.getElementById('pauseBtn').addEventListener('click', pause);
+      document.getElementById('resetBtn').addEventListener('click', reset);
+
+      // 画面タップで Start/Pause（ボタン押下は二重トグルになるので除外）
+      document.body.addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') return;
+        toggle();
+      });
+
+      // タブ復帰時に実時刻から即補正（バックグラウンドで interval が間引かれても取りこぼさない）
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden || !core.isRunning()) return;
+        Screen.acquire(); // 復帰時に WakeLock を取り直す（自動解放されるため）
+        core.sync(now());
+        if (core.isFinished()) { stopLoop(); refresh(); return; }
+        refresh();
+      });
+
+      refresh(); // 初期描画（DURATION を表示へ反映）
+
+      return { start, pause, reset, toggle, refresh };
+    })();
+
+    // ============================================================
+    // セルフテスト（?selftest で純粋中核の境界値を console 検証）
+    // ============================================================
+    function runSelfTest() {
+      const r = [];
+      const check = (name, cond) => r.push({ name, ok: !!cond });
+
+      // formatTime
+      check('format 600 -> 10:00', formatTime(600) === '10:00');
+      check('format 120 -> 2:00', formatTime(120) === '2:00');
+      check('format 51 -> 0:51', formatTime(51) === '0:51');
+      check('format 50 -> 50 (秒のみ)', formatTime(50) === '50');
+      check('format 5 -> 5', formatTime(5) === '5');
+      check('format 0 -> 0', formatTime(0) === '0');
+
+      // colorClass（排他）
+      check('color 600 -> ""', colorClass(600) === '');
+      check('color 120 -> info', colorClass(120) === 'info');
+      check('color 60 -> warning', colorClass(60) === 'warning');
+      check('color 30 -> danger', colorClass(30) === 'danger');
+      check('color 10 -> blink', colorClass(10) === 'blink');
+      check('color 0 -> "" (点滅は>0)', colorClass(0) === '');
+
+      // messageFor
+      check('msg 600 -> ""', messageFor(600) === '');
+      check('msg 120 -> そろそろまとめて', messageFor(120) === 'そろそろまとめて');
+      check('msg 60 -> ラストスパート', messageFor(60) === 'ラストスパート');
+      check('msg 10 -> まもなく終了', messageFor(10) === 'まもなく終了');
+      check('msg 0 -> おつかれさまでした', messageFor(0) === 'おつかれさまでした');
+
+      // TimerCore（時刻注入）
+      const c = createTimerCore(10000); // 10秒
+      check('core 初期=10s idle', c.remainingSec() === 10 && !c.isRunning());
+      check('core start 成功', c.start(0) === true && c.isRunning());
+      c.sync(500); check('core 0.5s後=10 (ceil)', c.remainingSec() === 10);
+      c.sync(1000); check('core 1s後=9', c.remainingSec() === 9);
+      c.pause(3000); check('core pause で停止&7保持', !c.isRunning() && c.remainingSec() === 7);
+      check('core pause 後 start 可', c.start(3000) === true);
+      c.sync(3000 + 11000); check('core 超過で 0&finished&停止', c.remainingSec() === 0 && c.isFinished() && !c.isRunning());
+      check('core 終了後 start 不可', c.start(999999) === false);
+      c.reset(); check('core reset で 10s idle 復帰', c.remainingSec() === 10 && !c.isRunning() && !c.isFinished());
+
+      const pass = r.filter((x) => x.ok).length;
+      console.log('%c[selftest] ' + pass + '/' + r.length + ' passed', 'font-weight:bold');
+      r.forEach((x) => console.log((x.ok ? '  OK   ' : '  FAIL ') + x.name));
+      return { pass, total: r.length, results: r };
+    }
+    if (typeof location !== 'undefined' && location.search.indexOf('selftest') !== -1) {
+      runSelfTest();
     }
 
-    function reset() {
-      stop();
-      remaining = TOTAL_SECONDS;
-      exploded = false;
-      document.body.classList.remove('info', 'warning', 'danger', 'blink');
-      render();
+    // ============================================================
+    // Service Worker 登録（オフライン対応）
+    // file:// では動かない。HTTPS / localhost 配信時のみ有効。
+    // ============================================================
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => { /* キャッシュなしでも動作 */ });
+      });
     }
-
-    function toggleStartPause() {
-      if (running) stop();
-      else start();
-    }
-
-    // ボタン
-    startBtn.addEventListener('click', start);
-    pauseBtn.addEventListener('click', stop);
-    resetBtn.addEventListener('click', reset);
-
-    // 画面タップで Start/Pause
-    document.body.addEventListener('click', (e) => {
-      // ボタン押下は二重トグルになるので除外
-      if (e.target.tagName === 'BUTTON') return;
-      toggleStartPause();
-    });
-
-    // 初期描画
-    render();
   </script>
 </body>
 
